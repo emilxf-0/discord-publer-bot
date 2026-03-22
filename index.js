@@ -70,6 +70,25 @@ function extractMessageData(message) {
   return { text, mediaItems };
 }
 
+/** Map timezone abbreviations to IANA for display (toLocaleString needs IANA) */
+const TZ_ABBR_TO_IANA = {
+  cet: 'Europe/Stockholm',
+  cest: 'Europe/Stockholm',
+  est: 'America/New_York',
+  edt: 'America/New_York',
+  pst: 'America/Los_Angeles',
+  pdt: 'America/Los_Angeles',
+  gmt: 'Europe/London',
+  bst: 'Europe/London',
+  utc: 'UTC',
+};
+
+function formatScheduledTime(isoString) {
+  const tz = process.env.PUBLER_SCHEDULE_TIMEZONE?.trim();
+  const tzDisplay = tz ? (TZ_ABBR_TO_IANA[tz.toLowerCase()] || tz) : 'UTC';
+  return new Date(isoString).toLocaleString(undefined, { timeZone: tzDisplay });
+}
+
 function parseScheduleTime(input) {
   const trimmed = (input || '').trim();
   if (!trimmed) return null;
@@ -177,7 +196,7 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
       }
       await interaction.editReply('Scheduling...');
       const { accountCount } = await schedulePost(text, mediaResult, scheduledAt);
-      const timeStr = new Date(scheduledAt).toLocaleString();
+      const timeStr = formatScheduledTime(scheduledAt);
       await interaction.editReply(
         `✓ Scheduled for ${timeStr} on ${accountCount} channel(s)!\n\nView in **Calendar**: https://app.publer.com/#/calendar`
       );
