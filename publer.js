@@ -507,6 +507,13 @@ async function schedulePost(text, mediaResult, scheduledAt) {
     if (key) networks[key] = { ...baseContent };
   }
 
+  // Stagger times 1 min apart per account (Publer best practice for multi-account)
+  const baseTime = new Date(scheduledAt).getTime();
+  const accountsWithTimes = accountsToUse.map((a, i) => ({
+    id: a.id,
+    scheduled_at: new Date(baseTime + i * 60 * 1000).toISOString(),
+  }));
+
   const res = await fetch(`${PUBLER_BASE}/posts/schedule`, {
     method: 'POST',
     headers: getHeaders(wsId),
@@ -516,7 +523,7 @@ async function schedulePost(text, mediaResult, scheduledAt) {
         posts: [
           {
             networks,
-            accounts: accountsToUse.map((a) => ({ id: a.id, scheduled_at: scheduledAt })),
+            accounts: accountsWithTimes,
           },
         ],
       },

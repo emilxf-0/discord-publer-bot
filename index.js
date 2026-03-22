@@ -33,10 +33,6 @@ const IMAGE_CONTENT_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif'
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
 const VIDEO_CONTENT_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'];
 
-/** Pending modal submits: uuid -> { text, mediaItems, commandType } */
-const pendingPublish = new Map();
-const PENDING_TTL_MS = 5 * 60 * 1000;
-
 function isImageAttachment(attachment) {
   if (attachment.contentType && IMAGE_CONTENT_TYPES.includes(attachment.contentType)) return true;
   const ext = (attachment.name || '').split('.').pop()?.toLowerCase();
@@ -116,10 +112,9 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-async function showPublishModal(interaction, commandType, defaultText) {
-  const uuid = crypto.randomUUID();
+async function showPublishModal(interaction, commandType, defaultText, channelId, messageId) {
   const modal = new ModalBuilder()
-    .setCustomId(`${commandType}::${uuid}`)
+    .setCustomId(`${commandType}::${channelId}::${messageId}`)
     .setTitle(commandType === 'schedule-all' ? 'Schedule post' : 'Edit & publish');
 
   const textInput = new TextInputBuilder()
@@ -147,12 +142,9 @@ async function showPublishModal(interaction, commandType, defaultText) {
   }
 
   await interaction.showModal(modal);
-  return uuid;
 }
 
 async function executePublish(interaction, { text, mediaItems }, commandType, extra = {}) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
   try {
     if (mediaItems.length === 0 && !text) {
       await interaction.editReply('No text or media to publish.');
@@ -186,7 +178,9 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
       await interaction.editReply('Scheduling...');
       const { accountCount } = await schedulePost(text, mediaResult, scheduledAt);
       const timeStr = new Date(scheduledAt).toLocaleString();
-      await interaction.editReply(`✓ Scheduled for ${timeStr} on ${accountCount} channel(s)!`);
+      await interaction.editReply(
+        `✓ Scheduled for ${timeStr} on ${accountCount} channel(s)!\n\nView in **Calendar**: https://app.publer.com/#/calendar`
+      );
     }
   } catch (err) {
     console.error('Publer error:', err);
@@ -230,9 +224,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'No text or media to publish.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const uuid = await showPublishModal(interaction, 'publish-twitter', text);
-      pendingPublish.set(uuid, { text, mediaItems, commandType: 'publish-twitter' });
-      setTimeout(() => pendingPublish.delete(uuid), PENDING_TTL_MS);
+      await showPublishModal(interaction, 'publish-twitter', text, message.channelId, message.id);
       return;
     }
 
@@ -241,9 +233,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'No text or media to publish.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const uuid = await showPublishModal(interaction, 'publish-all', text);
-      pendingPublish.set(uuid, { text, mediaItems, commandType: 'publish-all' });
-      setTimeout(() => pendingPublish.delete(uuid), PENDING_TTL_MS);
+      await showPublishModal(interaction, 'publish-all', text, message.channelId, message.id);
       return;
     }
 
@@ -252,31 +242,48 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'No text or media to schedule.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const uuid = await showPublishModal(interaction, 'schedule-all', text);
-      pendingPublish.set(uuid, { text, mediaItems, commandType: 'schedule-all' });
-      setTimeout(() => pendingPublish.delete(uuid), PENDING_TTL_MS);
+      await showPublishModal(interaction, 'schedule-all', text, message.channelId, message.id);
       return;
     }
   }
 
   if (interaction.isModalSubmit()) {
-    const [commandType, uuid] = interaction.customId.split('::');
-    const data = uuid ? pendingPublish.get(uuid) : null;
+    if (interaction.replied || interaction.deferred) return;
 
-    if (!data) {
-      await interaction.reply({ content: 'This form expired. Right-click the message and try again.', flags: MessageFlags.Ephemeral });
+    const parts = interaction.customId.split('::');
+    const [commandType, channelId, messageId] = parts;
+    if (!channelId || !messageId) {
+      await interaction.reply({ content: 'Invalid form. Right-click the message and try again.', flags: MessageFlags.Ephemeral });
       return;
     }
-    pendingPublish.delete(uuid);
 
-    const editedText = interaction.fields.getTextInputValue('post-text') || data.text;
+    let message;
+    try {
+      const channel = await client.channels.fetch(channelId);
+      message = await channel.messages.fetch(messageId);
+    } catch (err) {
+      await interaction.reply({
+        content: 'Could not load the message (it may have been deleted). Right-click the message and try again.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const { text, mediaItems } = extractMessageData(message);
+    const editedText = interaction.fields.getTextInputValue('post-text') || text;
     const extra = {};
-    if (data.commandType === 'schedule-all') {
+    if (commandType === 'schedule-all') {
       const timeInput = interaction.fields.getTextInputValue('schedule-time') || '';
       extra.scheduledAt = parseScheduleTime(timeInput);
     }
 
-    await executePublish(interaction, { text: editedText, mediaItems: data.mediaItems }, data.commandType, extra);
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    } catch (err) {
+      if (err.code === 40060) return; // Already acknowledged
+      throw err;
+    }
+    await executePublish(interaction, { text: editedText, mediaItems }, commandType, extra);
     return;
   }
 });
