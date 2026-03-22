@@ -1,6 +1,11 @@
-# Discord → Publer Forward Bot
+# Discord → Publer Bot
 
-Right-click any message in Discord → **Apps** → **Forward to Publer** to create an idea in Publer (choose channels when you use it).
+Right-click any message in Discord → **Apps** to:
+
+- **Forward to Publer** — Create an idea in Publer (choose channels manually)
+- **Publish to Twitter** — Edit text, then publish immediately to Twitter
+- **Publish to all** — Edit text, then publish immediately to all connected accounts
+- **Schedule to all** — Edit text, set date/time (e.g. "tomorrow 9am"), schedule to all channels (supports natural language; set `PUBLER_SCHEDULE_TIMEZONE` for your timezone, e.g. CET)
 
 ## Local setup
 
@@ -27,8 +32,8 @@ See `.env.example` for required variables.
    - `DISCORD_TOKEN`
    - `GUILD_ID`
    - `PUBLER_API_KEY`
-   - Optional: `PUBLER_WORKSPACE_NAME`, `PUBLER_EXCLUDE_PROVIDERS`, `PUBLER_IDEA_PRIVATE`
+   - Optional: `PUBLER_WORKSPACE_NAME`, `PUBLER_EXCLUDE_PROVIDERS`, `PUBLER_IDEA_PRIVATE`, `PUBLER_SCHEDULE_TIMEZONE`
 
 6. Click **Create Background Worker**. Render will build and run the bot.
 
-7. Check the **Logs** tab to confirm `Logged in as YourBot#1234` and `Registered 1 command(s)`.
+7. Check the **Logs** tab to confirm `Logged in as YourBot#1234` and `Registered 4 command(s)`.

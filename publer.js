@@ -355,9 +355,191 @@ async function createIdea(text, mediaResult, workspaceId) {
   return jobId;
 }
 
+/**
+ * Build post content and filter accounts for publishing/scheduling.
+ * Returns { baseContent, accountsToUse }.
+ */
+function buildPublishPayload(text, mediaResult, options = {}) {
+  const { providerFilter } = options;
+  const { ids: mediaIds, types: mediaTypes } = mediaResult;
+  const hasMedia = mediaIds.length > 0;
+  const hasVideo = mediaTypes.includes('video');
+  const postType = !hasMedia ? 'status' : hasVideo ? 'video' : mediaIds.length > 1 ? 'carousel' : 'photo';
+
+  return { postType, hasMedia, mediaIds, mediaTypes };
+}
+
+/**
+ * Get filtered accounts for publishing. Used by publishImmediately and schedulePost.
+ */
+function getAccountsForPublish(accounts, hasMedia, providerFilter) {
+  let accountsToUse = hasMedia
+    ? accounts
+    : accounts.filter((a) => !MEDIA_REQUIRED.has(a.provider));
+
+  // Skip EXCLUDED_PROVIDERS when user explicitly chose a provider (e.g. "Publish to Twitter")
+  if (!providerFilter) {
+    accountsToUse = accountsToUse.filter((a) => !EXCLUDED_PROVIDERS.has(a.provider));
+  }
+
+  if (providerFilter) {
+    accountsToUse = accountsToUse.filter((a) => a.provider === providerFilter);
+  }
+
+  // One account per provider
+  const seen = new Set();
+  accountsToUse = accountsToUse.filter((a) => {
+    if (seen.has(a.provider)) return false;
+    seen.add(a.provider);
+    return true;
+  });
+
+  return accountsToUse;
+}
+
+/**
+ * Publish immediately via Publer. Uses POST /posts/schedule/publish.
+ * providerFilter: e.g. 'twitter' for Twitter only, or null for all accounts.
+ */
+async function publishImmediately(text, mediaResult, providerFilter = null) {
+  const { workspaceId: wsId, accounts } = await getWorkspaceAndAccounts();
+
+  const { postType, hasMedia, mediaIds, mediaTypes } = buildPublishPayload(text, mediaResult, { providerFilter });
+  const accountsToUse = getAccountsForPublish(accounts, hasMedia, providerFilter);
+
+  if (accountsToUse.length === 0) {
+    throw new Error(
+      providerFilter
+        ? `No active ${providerFilter} account found. Connect one in Publer.`
+        : hasMedia
+          ? 'No valid accounts'
+          : 'Text-only posts cannot go to Instagram, TikTok, Pinterest, or YouTube. Add an image.'
+    );
+  }
+
+  const baseContent = {
+    type: postType,
+    text: text || '(no caption)',
+  };
+  if (hasMedia) {
+    baseContent.media = mediaIds.map((id, i) => {
+      const t = mediaTypes[i] || 'image';
+      return {
+        id,
+        type: t === 'video' ? 'video' : 'image',
+        ...(t === 'image' && { alt_text: 'Image from Discord' }),
+      };
+    });
+  }
+
+  const providers = [...new Set(accountsToUse.map((a) => a.provider).filter(Boolean))];
+  const networkKey = (p) => PROVIDER_TO_NETWORK[p] || p;
+  const networks = {};
+  for (const provider of providers) {
+    const key = networkKey(provider);
+    if (key) networks[key] = { ...baseContent };
+  }
+
+  const res = await fetch(`${PUBLER_BASE}/posts/schedule/publish`, {
+    method: 'POST',
+    headers: getHeaders(wsId),
+    body: JSON.stringify({
+      bulk: {
+        state: 'scheduled',
+        posts: [
+          {
+            networks,
+            accounts: accountsToUse.map((a) => ({ id: a.id })),
+          },
+        ],
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.errors?.[0] || `Publer publish failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const jobId = data?.data?.job_id ?? data?.job_id;
+  if (!jobId) throw new Error('No job_id from Publer');
+  await pollPostJob(jobId, wsId);
+  return { jobId, accountCount: accountsToUse.length };
+}
+
+/**
+ * Schedule a post for a specific time. Uses POST /posts/schedule with scheduled_at.
+ * scheduledAt: ISO 8601 string (e.g. "2025-06-01T09:00:00Z").
+ */
+async function schedulePost(text, mediaResult, scheduledAt) {
+  const { workspaceId: wsId, accounts } = await getWorkspaceAndAccounts();
+
+  const { postType, hasMedia, mediaIds, mediaTypes } = buildPublishPayload(text, mediaResult, {});
+  const accountsToUse = getAccountsForPublish(accounts, hasMedia, null);
+
+  if (accountsToUse.length === 0) {
+    throw new Error(
+      hasMedia ? 'No valid accounts' : 'Text-only posts cannot go to Instagram, TikTok, Pinterest, or YouTube. Add an image.'
+    );
+  }
+
+  const baseContent = {
+    type: postType,
+    text: text || '(no caption)',
+  };
+  if (hasMedia) {
+    baseContent.media = mediaIds.map((id, i) => {
+      const t = mediaTypes[i] || 'image';
+      return {
+        id,
+        type: t === 'video' ? 'video' : 'image',
+        ...(t === 'image' && { alt_text: 'Image from Discord' }),
+      };
+    });
+  }
+
+  const providers = [...new Set(accountsToUse.map((a) => a.provider).filter(Boolean))];
+  const networkKey = (p) => PROVIDER_TO_NETWORK[p] || p;
+  const networks = {};
+  for (const provider of providers) {
+    const key = networkKey(provider);
+    if (key) networks[key] = { ...baseContent };
+  }
+
+  const res = await fetch(`${PUBLER_BASE}/posts/schedule`, {
+    method: 'POST',
+    headers: getHeaders(wsId),
+    body: JSON.stringify({
+      bulk: {
+        state: 'scheduled',
+        posts: [
+          {
+            networks,
+            accounts: accountsToUse.map((a) => ({ id: a.id, scheduled_at: scheduledAt })),
+          },
+        ],
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.errors?.[0] || `Publer schedule failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const jobId = data?.data?.job_id ?? data?.job_id;
+  if (!jobId) throw new Error('No job_id from Publer');
+  await pollPostJob(jobId, wsId);
+  return { jobId, accountCount: accountsToUse.length };
+}
+
 module.exports = {
   getWorkspaceAndAccounts,
   uploadMediaFromUrls,
   createDraftPost,
   createIdea,
+  publishImmediately,
+  schedulePost,
 };
