@@ -155,13 +155,19 @@ client.once(Events.ClientReady, async () => {
 });
 
 async function showPublishModal(interaction, commandType, defaultText, channelId, messageId) {
+  const modalTitle =
+    commandType === 'schedule-all'
+      ? 'Schedule post'
+      : commandType === 'forward-idea'
+        ? 'Forward to Publer'
+        : 'Edit & publish';
   const modal = new ModalBuilder()
     .setCustomId(`${commandType}::${channelId}::${messageId}`)
-    .setTitle(commandType === 'schedule-all' ? 'Schedule post' : 'Edit & publish');
+    .setTitle(modalTitle);
 
   const textInput = new TextInputBuilder()
     .setCustomId('post-text')
-    .setLabel('Post content')
+    .setLabel(commandType === 'forward-idea' ? 'Idea content' : 'Post content')
     .setStyle(TextInputStyle.Paragraph)
     .setValue(defaultText || '(no caption)')
     .setRequired(true)
@@ -218,6 +224,15 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
       mediaResult = await uploadMediaFromUrls(mediaItems, workspaceId);
     }
 
+    if (commandType === 'forward-idea') {
+      await interaction.editReply('Creating idea in Publer...');
+      await createIdea(text, mediaResult, workspaceId);
+      await interaction.editReply(
+        `✓ Idea created!\n\nGo to **Ideas** in Publer to choose channels and schedule: https://app.publer.com/#/ideas`
+      );
+      return;
+    }
+
     if (commandType === 'publish-twitter') {
       await interaction.editReply('Publishing to Twitter...');
       const { accountCount } = await publishImmediately(text, mediaResult, 'twitter');
@@ -262,28 +277,11 @@ client.on('interactionCreate', async (interaction) => {
     const { text, mediaItems } = extractMessageData(message);
 
     if (interaction.commandName === 'Forward to Publer') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      try {
-        if (mediaItems.length === 0 && !text) {
-          await interaction.editReply('No text or media to forward.');
-          return;
-        }
-        await interaction.editReply('Connecting to Publer...');
-        const { workspaceId } = await getWorkspaceAndAccounts();
-        let mediaResult = { ids: [], types: [] };
-        if (mediaItems.length > 0) {
-          await interaction.editReply('Uploading to Publer...');
-          mediaResult = await uploadMediaFromUrls(mediaItems, workspaceId);
-        }
-        await interaction.editReply('Creating idea in Publer...');
-        await createIdea(text, mediaResult, workspaceId);
-        await interaction.editReply(
-          `✓ Idea created!\n\nGo to **Ideas** in Publer to choose channels and schedule: https://app.publer.com/#/ideas`
-        );
-      } catch (err) {
-        console.error('Publer error:', err);
-        await interaction.editReply(`Failed: ${err.message}`).catch(() => {});
+      if (mediaItems.length === 0 && !text) {
+        await interaction.reply({ content: 'No text or media to forward.', flags: MessageFlags.Ephemeral });
+        return;
       }
+      await showPublishModal(interaction, 'forward-idea', text, message.channelId, message.id);
       return;
     }
 
