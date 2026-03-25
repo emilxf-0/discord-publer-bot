@@ -22,6 +22,17 @@ function getHeaders(workspaceId) {
   };
 }
 
+/** Publer sometimes returns alternate slugs; API `networks` keys must match docs (e.g. `bluesky`). */
+function normalizeProvider(provider) {
+  if (!provider) return provider;
+  const p = String(provider).toLowerCase().trim();
+  const aliases = {
+    bsky: 'bluesky',
+    blue_sky: 'bluesky',
+  };
+  return aliases[p] || p;
+}
+
 /**
  * Find the workspace by name and fetch all its accounts.
  * Returns { workspaceId, accountIds }.
@@ -48,7 +59,8 @@ async function getWorkspaceAndAccounts() {
   const accounts = accountRes?.accounts ?? (Array.isArray(accountRes) ? accountRes : []);
   const activeAccounts = accounts
     .filter((a) => !a.status || a.status === 'active')
-    .filter((a) => a.id && a.provider);
+    .filter((a) => a.id && a.provider)
+    .map((a) => ({ ...a, provider: normalizeProvider(a.provider) }));
 
   if (activeAccounts.length === 0) {
     throw new Error(`No active accounts in workspace "${WORKSPACE_NAME}"`);
