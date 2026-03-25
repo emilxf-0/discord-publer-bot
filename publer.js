@@ -177,6 +177,43 @@ const PROVIDER_TO_NETWORK = {
 const MEDIA_REQUIRED = new Set(['instagram', 'tiktok', 'pinterest', 'youtube']);
 
 /**
+ * Providers where Publer supports follow-up comments / thread replies via Post Callbacks.
+ * @see https://publer.com/docs/posting/create-posts/content-types/post-callbacks
+ * Not supported: Pinterest, TikTok, Facebook personal profiles, Google Business; Instagram API follow-ups differ.
+ */
+const FOLLOWUP_COMMENT_SUPPORTED = new Set([
+  'twitter',
+  'linkedin',
+  'facebook',
+  'mastodon',
+  'threads',
+  'bluesky',
+]);
+
+function supportsFollowUpComments(provider) {
+  return FOLLOWUP_COMMENT_SUPPORTED.has(normalizeProvider(provider));
+}
+
+function getFollowUpMetricsThreshold() {
+  const v = parseInt(process.env.PUBLER_FOLLOWUP_METRICS_THRESHOLD || '1000', 10);
+  return Number.isFinite(v) && v > 0 ? v : 1000;
+}
+
+/**
+ * Publer documents `reach` and `engagements` for performance callbacks (not a separate "impressions" field).
+ * OR = fire when either metric exceeds the threshold (closest to "reach or impressions" in the API).
+ */
+function buildFollowUpMetricsConditions(threshold) {
+  return {
+    relation: 'OR',
+    clauses: {
+      reach: { comparison: 'gt', value: threshold },
+      engagements: { comparison: 'gt', value: threshold },
+    },
+  };
+}
+
+/**
  * Create a draft post in Publer. Polls job status and throws on failure.
  * Uses explicit network keys per provider (default doesn't work for all accounts).
  * For text-only messages, excludes Instagram/TikTok/Pinterest/YouTube (they require media).
@@ -483,8 +520,14 @@ async function publishImmediately(text, mediaResult, providerFilter = null) {
 /**
  * Schedule a post for a specific time. Uses POST /posts/schedule with scheduled_at.
  * scheduledAt: ISO 8601 string (e.g. "2025-06-01T09:00:00Z").
+ * options.followUpText: optional follow-up comment (only attached on providers that support Publer follow-up callbacks).
  */
-async function schedulePost(text, mediaResult, scheduledAt) {
+async function schedulePost(text, mediaResult, scheduledAt, options = {}) {
+  const { followUpText } = options;
+  const followUpTrimmed = typeof followUpText === 'string' ? followUpText.trim() : '';
+  const useFollowUp = followUpTrimmed.length > 0;
+  const threshold = getFollowUpMetricsThreshold();
+
   const { workspaceId: wsId, accounts } = await getWorkspaceAndAccounts();
 
   const { postType, hasMedia, mediaIds, mediaTypes } = buildPublishPayload(text, mediaResult, {});
@@ -521,10 +564,25 @@ async function schedulePost(text, mediaResult, scheduledAt) {
 
   // Stagger times 1 min apart per account (Publer best practice for multi-account)
   const baseTime = new Date(scheduledAt).getTime();
-  const accountsWithTimes = accountsToUse.map((a, i) => ({
-    id: a.id,
-    scheduled_at: new Date(baseTime + i * 60 * 1000).toISOString(),
-  }));
+  const followUpPayload = useFollowUp
+    ? {
+        text: followUpTrimmed,
+        conditions: buildFollowUpMetricsConditions(threshold),
+      }
+    : null;
+
+  let followUpAccountCount = 0;
+  const accountsWithTimes = accountsToUse.map((a, i) => {
+    const row = {
+      id: a.id,
+      scheduled_at: new Date(baseTime + i * 60 * 1000).toISOString(),
+    };
+    if (followUpPayload && supportsFollowUpComments(a.provider)) {
+      row.comments = [followUpPayload];
+      followUpAccountCount += 1;
+    }
+    return row;
+  });
 
   const res = await fetch(`${PUBLER_BASE}/posts/schedule`, {
     method: 'POST',
@@ -551,7 +609,13 @@ async function schedulePost(text, mediaResult, scheduledAt) {
   const jobId = data?.data?.job_id ?? data?.job_id;
   if (!jobId) throw new Error('No job_id from Publer');
   await pollPostJob(jobId, wsId);
-  return { jobId, accountCount: accountsToUse.length };
+  return {
+    jobId,
+    accountCount: accountsToUse.length,
+    followUpAccountCount: useFollowUp ? followUpAccountCount : 0,
+    followUpRequested: useFollowUp,
+    followUpThreshold: useFollowUp ? threshold : undefined,
+  };
 }
 
 module.exports = {

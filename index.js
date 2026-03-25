@@ -101,6 +101,29 @@ function parseScheduleTime(input) {
   return result.toISOString();
 }
 
+const DEFAULT_FOLLOWUP_ECLIPSIUM =
+  'Get it on steam https://store.steampowered.com/app/2419670/Eclipsium/';
+const DEFAULT_FOLLOWUP_HAULKING =
+  'Wishlist on steam https://store.steampowered.com/app/4373420/All_Haul_the_King/';
+
+/** @returns {string | null} Error message, or null if valid */
+function validateFollowUpPreset(raw) {
+  const p = (raw || '').trim().toLowerCase();
+  if (!p) return null;
+  if (p === '1' || p === '2') return null;
+  return 'Follow-up preset must be **1**, **2**, or left blank.';
+}
+
+function resolveScheduleFollowUp(presetRaw, textRaw) {
+  const p = (presetRaw || '').trim().toLowerCase();
+  if (!p) return null;
+  const custom = (textRaw || '').trim();
+  if (custom) return custom;
+  if (p === '1') return DEFAULT_FOLLOWUP_ECLIPSIUM;
+  if (p === '2') return DEFAULT_FOLLOWUP_HAULKING;
+  return null;
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
@@ -152,9 +175,25 @@ async function showPublishModal(interaction, commandType, defaultText, channelId
       .setStyle(TextInputStyle.Short)
       .setPlaceholder(`tomorrow 9am, Mon 14:00, 2025-06-01 09:00 (${tzHint})`)
       .setRequired(true);
+    const followupPreset = new TextInputBuilder()
+      .setCustomId('followup-preset')
+      .setLabel('Steam follow-up (1 or 2)')
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('1=Eclipsium, 2=Wishlist, blank=none')
+      .setRequired(false)
+      .setMaxLength(10);
+    const followupText = new TextInputBuilder()
+      .setCustomId('followup-text')
+      .setLabel('Follow-up text (optional)')
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder('Override preset text; leave blank for default')
+      .setRequired(false)
+      .setMaxLength(4000);
     modal.addComponents(
       new ActionRowBuilder().addComponents(textInput),
-      new ActionRowBuilder().addComponents(timeInput)
+      new ActionRowBuilder().addComponents(timeInput),
+      new ActionRowBuilder().addComponents(followupPreset),
+      new ActionRowBuilder().addComponents(followupText)
     );
   } else {
     modal.addComponents(new ActionRowBuilder().addComponents(textInput));
@@ -195,11 +234,21 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
         return;
       }
       await interaction.editReply('Scheduling...');
-      const { accountCount } = await schedulePost(text, mediaResult, scheduledAt);
+      const scheduleOpts = extra.followUpText ? { followUpText: extra.followUpText } : {};
+      const result = await schedulePost(text, mediaResult, scheduledAt, scheduleOpts);
       const timeStr = formatScheduledTime(scheduledAt);
-      await interaction.editReply(
-        `✓ Scheduled for ${timeStr} on ${accountCount} channel(s)!\n\nView in **Calendar**: https://app.publer.com/#/calendar`
-      );
+      let reply =
+        `✓ Scheduled for ${timeStr} on ${result.accountCount} channel(s)!\n\nView in **Calendar**: https://app.publer.com/#/calendar`;
+      if (result.followUpRequested) {
+        const th = result.followUpThreshold ?? 1000;
+        if (result.followUpAccountCount > 0) {
+          reply += `\n\n**Follow-up** (Publer: when reach **or** engagement > ${th}): ${result.followUpAccountCount} account(s).`;
+        } else {
+          reply +=
+            '\n\nFollow-up was set, but **no connected account** supports Publer follow-up comments (X, LinkedIn, Facebook Page, Mastodon, Threads, Bluesky).';
+        }
+      }
+      await interaction.editReply(reply);
     }
   } catch (err) {
     console.error('Publer error:', err);
@@ -292,8 +341,17 @@ client.on('interactionCreate', async (interaction) => {
     const editedText = interaction.fields.getTextInputValue('post-text') || text;
     const extra = {};
     if (commandType === 'schedule-all') {
+      const presetErr = validateFollowUpPreset(interaction.fields.getTextInputValue('followup-preset') || '');
+      if (presetErr) {
+        await interaction.reply({ content: presetErr, flags: MessageFlags.Ephemeral });
+        return;
+      }
       const timeInput = interaction.fields.getTextInputValue('schedule-time') || '';
       extra.scheduledAt = parseScheduleTime(timeInput);
+      extra.followUpText = resolveScheduleFollowUp(
+        interaction.fields.getTextInputValue('followup-preset') || '',
+        interaction.fields.getTextInputValue('followup-text') || ''
+      );
     }
 
     try {
