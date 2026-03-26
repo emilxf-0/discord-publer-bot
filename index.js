@@ -135,6 +135,7 @@ client.once(Events.ClientReady, async () => {
   const commands = [
     { name: 'Forward to Publer', type: ApplicationCommandType.Message },
     { name: 'YOLO Publish to Twitter', type: ApplicationCommandType.Message },
+    { name: 'YOLO Publish to LinkedIn', type: ApplicationCommandType.Message },
     { name: 'YOLO Publish to all', type: ApplicationCommandType.Message },
     { name: 'Schedule to all', type: ApplicationCommandType.Message },
   ];
@@ -237,6 +238,10 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
       await interaction.editReply('Publishing to Twitter...');
       const { accountCount } = await publishImmediately(text, mediaResult, 'twitter');
       await interaction.editReply(`✓ Published to Twitter!`);
+    } else if (commandType === 'publish-linkedin') {
+      await interaction.editReply('Publishing to LinkedIn...');
+      await publishImmediately(text, mediaResult, 'linkedin');
+      await interaction.editReply(`✓ Published to LinkedIn!`);
     } else if (commandType === 'publish-all') {
       await interaction.editReply('Publishing to all channels...');
       const { accountCount } = await publishImmediately(text, mediaResult, null);
@@ -291,6 +296,15 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await showPublishModal(interaction, 'publish-twitter', text, message.channelId, message.id);
+      return;
+    }
+
+    if (interaction.commandName === 'YOLO Publish to LinkedIn') {
+      if (mediaItems.length === 0 && !text) {
+        await interaction.reply({ content: 'No text or media to publish.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await showPublishModal(interaction, 'publish-linkedin', text, message.channelId, message.id);
       return;
     }
 
