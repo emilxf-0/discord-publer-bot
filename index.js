@@ -196,8 +196,16 @@ async function showPublishModal(interaction, commandType, defaultText, channelId
       .setPlaceholder('Override preset text; leave blank for default')
       .setRequired(false)
       .setMaxLength(4000);
+    const linkedInCaption = new TextInputBuilder()
+      .setCustomId('linkedin-caption')
+      .setLabel('LinkedIn caption (optional)')
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder('Override for LinkedIn only; blank = same as post above')
+      .setRequired(false)
+      .setMaxLength(4000);
     modal.addComponents(
       new ActionRowBuilder().addComponents(textInput),
+      new ActionRowBuilder().addComponents(linkedInCaption),
       new ActionRowBuilder().addComponents(timeInput),
       new ActionRowBuilder().addComponents(followupPreset),
       new ActionRowBuilder().addComponents(followupText)
@@ -255,10 +263,16 @@ async function executePublish(interaction, { text, mediaItems }, commandType, ex
       }
       await interaction.editReply('Scheduling...');
       const scheduleOpts = extra.followUpText ? { followUpText: extra.followUpText } : {};
+      if (typeof extra.linkedinCaptionOverride === 'string') {
+        scheduleOpts.linkedinCaptionOverride = extra.linkedinCaptionOverride;
+      }
       const result = await schedulePost(text, mediaResult, scheduledAt, scheduleOpts);
       const timeStr = formatScheduledTime(scheduledAt);
       let reply =
         `✓ Scheduled for ${timeStr} on ${result.accountCount} channel(s)!\n\nView in **Calendar**: https://app.publer.com/#/calendar`;
+      if (result.linkedinCaptionCustom) {
+        reply += '\n\n**LinkedIn** uses the separate caption in the form; other channels use the main post.';
+      }
       if (result.followUpRequested) {
         const th = result.followUpThreshold ?? 1000;
         if (result.followUpAccountCount > 0) {
@@ -364,6 +378,7 @@ client.on('interactionCreate', async (interaction) => {
         interaction.fields.getTextInputValue('followup-preset') || '',
         interaction.fields.getTextInputValue('followup-text') || ''
       );
+      extra.linkedinCaptionOverride = interaction.fields.getTextInputValue('linkedin-caption') ?? '';
     }
 
     try {

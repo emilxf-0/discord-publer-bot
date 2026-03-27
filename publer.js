@@ -521,9 +521,10 @@ async function publishImmediately(text, mediaResult, providerFilter = null) {
  * Schedule a post for a specific time. Uses POST /posts/schedule with scheduled_at.
  * scheduledAt: ISO 8601 string (e.g. "2025-06-01T09:00:00Z").
  * options.followUpText: optional follow-up comment (only attached on providers that support Publer follow-up callbacks).
+ * options.linkedinCaptionOverride: optional; if non-empty, `networks.linkedin` uses this caption instead of `text`.
  */
 async function schedulePost(text, mediaResult, scheduledAt, options = {}) {
-  const { followUpText } = options;
+  const { followUpText, linkedinCaptionOverride } = options;
   const followUpTrimmed = typeof followUpText === 'string' ? followUpText.trim() : '';
   const useFollowUp = followUpTrimmed.length > 0;
   const threshold = getFollowUpMetricsThreshold();
@@ -554,12 +555,22 @@ async function schedulePost(text, mediaResult, scheduledAt, options = {}) {
     });
   }
 
+  const linkedinOverride =
+    typeof linkedinCaptionOverride === 'string' && linkedinCaptionOverride.trim().length > 0
+      ? linkedinCaptionOverride.trim()
+      : null;
+
   const providers = [...new Set(accountsToUse.map((a) => a.provider).filter(Boolean))];
   const networkKey = (p) => PROVIDER_TO_NETWORK[p] || p;
   const networks = {};
   for (const provider of providers) {
     const key = networkKey(provider);
-    if (key) networks[key] = { ...baseContent };
+    if (!key) continue;
+    const netContent = { ...baseContent };
+    if (key === 'linkedin' && linkedinOverride) {
+      netContent.text = linkedinOverride;
+    }
+    networks[key] = netContent;
   }
 
   // Stagger times 1 min apart per account (Publer best practice for multi-account)
@@ -609,12 +620,14 @@ async function schedulePost(text, mediaResult, scheduledAt, options = {}) {
   const jobId = data?.data?.job_id ?? data?.job_id;
   if (!jobId) throw new Error('No job_id from Publer');
   await pollPostJob(jobId, wsId);
+  const hasLinkedInAccount = accountsToUse.some((a) => a.provider === 'linkedin');
   return {
     jobId,
     accountCount: accountsToUse.length,
     followUpAccountCount: useFollowUp ? followUpAccountCount : 0,
     followUpRequested: useFollowUp,
     followUpThreshold: useFollowUp ? threshold : undefined,
+    linkedinCaptionCustom: Boolean(linkedinOverride && hasLinkedInAccount),
   };
 }
 
